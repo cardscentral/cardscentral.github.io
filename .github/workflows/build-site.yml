@@ -1,5 +1,6 @@
 name: Build & Publish Site
 
+# NOTE: default branch is `main`; this workflow publishes to `main` (served at root).
 # Builds the Cards Central website from the SOURCE repo (cardscentral/cardscentral)
 # and publishes it to THIS repo's `main` branch, which GitHub Pages serves at the
 # org root (https://cardscentral.github.io/).
