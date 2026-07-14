@@ -30,8 +30,11 @@ personal access token or deploy key is required.
 
 - **Manual**: `Actions → Build & Publish Site → Run workflow` (pick which stages).
 - **Scheduled**: refreshes QA (and picks up new releases for prod) automatically.
-- **Source repo dispatch** (optional): the source repo can send a
-  `repository_dispatch` to rebuild immediately on push/release.
+- **Source repo dispatch**: the source repo's
+  [`.github/workflows/notify-pages.yml`](https://github.com/cardscentral/cardscentral/blob/main/.github/workflows/notify-pages.yml)
+  sends a `repository_dispatch` to rebuild immediately — `qa` on every push to
+  `main`, `release` on a published Release. (Needs a `PAGES_DISPATCH_TOKEN`
+  secret in the source repo; without it the schedule still keeps the site fresh.)
 
 ## One-time setup
 
