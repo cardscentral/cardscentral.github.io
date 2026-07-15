@@ -1,0 +1,188 @@
+name: Build & Publish Site
+
+# NOTE: default branch is `main`; this workflow publishes to `main` (served at root).
+# Builds the Cards Central website from the SOURCE repo (cardscentral/cardscentral)
+# and publishes it to THIS repo's `main` branch, which GitHub Pages serves at the
+# org root (https://cardscentral.github.io/).
+#
+#   Landing → https://cardscentral.github.io/       (static marketing page, from
+#             the source repo's `landing/`, built from the latest RELEASE)
+#   Prod    → https://cardscentral.github.io/app/   (PWA built from the source
+#             repo's latest published RELEASE tag)
+#   QA      → https://cardscentral.github.io/qa/    (PWA built from the source
+#             repo's `main` branch — latest merged code)
+#
+# Because it publishes to ITSELF, the built-in GITHUB_TOKEN is enough — no PAT or
+# deploy key needed. Both repos are PUBLIC and in the same org, so checking out
+# the source repo also needs no token. Each stage writes into its own subdir (or
+# root for landing) with keep_files:true, so one stage never clobbers another.
+#
+# IMPORTANT: the landing stage publishes to the site ROOT. It MUST exclude the
+# `.github/` directory, otherwise the deploy overwrites this very workflow file
+# and the site can never rebuild itself again (this happened once — see history).
+#
+# Triggers:
+#   - Manual (workflow_dispatch): choose which stages to (re)build.
+#   - Scheduled: refresh QA + pick up any new release for prod/landing. This is
+#     the source of truth — it keeps the site correct even with no cross-repo ping.
+#   - repository_dispatch: the source repo CAN trigger an immediate rebuild
+#     (types: "qa" on push to main, "release" on a published release) IF it has a
+#     dispatch token configured. Optional — the schedule covers correctness.
+#
+# One-time setup: Settings → Pages → Source = "Deploy from a branch",
+# Branch = `main` / `(root)`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      stages:
+        description: 'Which stages to build'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - qa
+          - prod-and-landing
+  schedule:
+    # Every day at 05:17 UTC — keeps QA fresh and picks up new releases.
+    - cron: '17 5 * * *'
+  repository_dispatch:
+    types: [qa, release]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-site
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: cardscentral/cardscentral
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # QA — built from the source repo's `main`. Served at /qa/.
+  # Runs for: dispatch(all|qa), schedule, repository_dispatch(qa|release).
+  # ---------------------------------------------------------------------------
+  qa:
+    name: Build QA (source main → /qa/)
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'repository_dispatch' ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.stages == 'all' || github.event.inputs.stages == 'qa'))
+    steps:
+      - name: Checkout source (main)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web PWA (QA)
+        run: npm run build:web
+        env:
+          BASE_PATH: /qa/
+
+      - name: Publish QA to this repo (root /qa/)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: main
+          publish_dir: ./dist
+          destination_dir: qa
+          keep_files: true
+          commit_message: 'deploy(qa): source main'
+
+  # ---------------------------------------------------------------------------
+  # Prod + Landing — built from the source repo's latest published RELEASE tag.
+  # Prod PWA → /app/, landing (static) → site root /.
+  # Runs for: dispatch(all|prod-and-landing), schedule, repository_dispatch(release).
+  # ---------------------------------------------------------------------------
+  prod-and-landing:
+    name: Build Prod + Landing (source release → /app/ + /)
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'release') ||
+      (github.event_name == 'workflow_dispatch' &&
+        (github.event.inputs.stages == 'all' || github.event.inputs.stages == 'prod-and-landing'))
+    steps:
+      - name: Resolve latest release tag of the source repo
+        id: rel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="$(gh release view --repo "$SOURCE_REPO" --json tagName -q .tagName 2>/dev/null || true)"
+          if [ -z "$TAG" ]; then
+            echo "No published release found on $SOURCE_REPO — skipping prod/landing."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Latest release tag: $TAG"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout source (release tag)
+        if: steps.rel.outputs.found == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ steps.rel.outputs.tag }}
+
+      - name: Setup Node.js
+        if: steps.rel.outputs.found == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: steps.rel.outputs.found == 'true'
+        run: npm ci
+
+      - name: Build web PWA (Prod)
+        if: steps.rel.outputs.found == 'true'
+        run: npm run build:web
+        env:
+          BASE_PATH: /app/
+
+      - name: Publish Prod to this repo (root /app/)
+        if: steps.rel.outputs.found == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: main
+          publish_dir: ./dist
+          destination_dir: app
+          keep_files: true
+          commit_message: 'deploy(prod): ${{ steps.rel.outputs.tag }}'
+
+      - name: Regenerate landing screenshots (brand-consistent)
+        if: steps.rel.outputs.found == 'true'
+        run: npm run generate:landing
+
+      - name: Publish Landing to this repo (site root)
+        if: steps.rel.outputs.found == 'true'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: main
+          publish_dir: ./landing
+          # Site root. keep_files:true preserves the app/ and qa/ subdirectories,
+          # and exclude_assets keeps this workflow from deleting ITSELF (the
+          # root publish would otherwise remove the repo's own .github/ dir).
+          keep_files: true
+          exclude_assets: '.github,.github/**'
+          commit_message: 'deploy(landing): ${{ steps.rel.outputs.tag }}'
