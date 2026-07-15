@@ -198,10 +198,14 @@ jobs:
         working-directory: pages-repo
         run: |
           set -euo pipefail
-          # Copy landing files into the repo root. Never touch app/, qa/, .github/.
-          cp -R /tmp/landing-out/. .
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The Prod step above just pushed a deploy(prod) commit to main, so this
+          # checkout is behind. Sync to the latest main before committing landing.
+          git fetch origin main
+          git reset --hard origin/main
+          # Copy landing files into the repo root. Never touch app/, qa/, .github/.
+          cp -R /tmp/landing-out/. .
           git add -- . ':!app' ':!qa' ':!.github'
           if git diff --cached --quiet; then
             echo "No landing changes to publish."
@@ -209,4 +213,5 @@ jobs:
             git commit -m 'deploy(landing): ${{ steps.rel.outputs.tag }}'
             git push origin HEAD:main
           fi
+
 
